@@ -102,6 +102,7 @@ class FundingBot:
         self.formatter = MessageFormatter()
         self.user_settings: Dict[int, Dict] = {}
         self.alert_cooldown: Dict[str, datetime] = {}  # {token: last_alert_time}
+        self.time_alert_sent: Dict[str, Set[str]] = {}  # {chat_id: set of "token_20m" or "token_10m"}
         
     def _init_aggregator(self) -> FundingRateAggregator:
         """Инициализация агрегатора с адаптерами бирж."""
@@ -136,6 +137,7 @@ class FundingBot:
                 'threshold': 0.5,  # 0.5% по умолчанию
                 'monitoring': False,
                 'tokens': set(),  # Токены для мониторинга
+                'time_alerts': False,  # Алерты за 20/10 минут до funding
             }
         
         welcome_message = (
@@ -148,8 +150,10 @@ class FundingBot:
             "🔍 /token BTC - Данные по конкретному токену\n"
             "💎 /hedge - Найти возможности для хеджирования\n"
             "⚙️ /set_threshold 0.5 - Установить порог алерта\n"
-            "🔔 /start_monitoring - Начать мониторинг\n"
+            "🔔 /start_monitoring - Начать мониторинг по порогу\n"
             "🔕 /stop_monitoring - Остановить мониторинг\n"
+            "⏰ /start_time_alerts - Алерты за 20/10 мин до funding\n"
+            "⏰ /stop_time_alerts - Остановить time-based алерты\n"
             "📊 /status - Текущие настройки\n\n"
             "<b>🔧 Управление кэшем:</b>\n"
             "📈 /cache_stats - Статистика кэша\n"
@@ -330,20 +334,83 @@ class FundingBot:
         
         await update.message.reply_text("✅ Мониторинг остановлен")
     
+    async def start_time_alerts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /start_time_alerts - начать time-based алерты."""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+        
+        # Используем chat_id для хранения настроек (поддержка групп)
+        if chat_id not in self.user_settings:
+            self.user_settings[chat_id] = {
+                'threshold': 0.5,
+                'monitoring': False,
+                'time_alerts': True
+            }
+        else:
+            self.user_settings[chat_id]['time_alerts'] = True
+        
+        # Останавливаем старую задачу если есть
+        old_jobs = context.job_queue.get_jobs_by_name(f"time_alerts_{chat_id}")
+        for job in old_jobs:
+            job.schedule_removal()
+        
+        # Запускаем задачу проверки time-based алертов (каждые 2 минуты)
+        context.job_queue.run_repeating(
+            self.check_time_alerts,
+            interval=120,  # каждые 2 минуты
+            first=10,
+            data={'chat_id': chat_id},
+            name=f"time_alerts_{chat_id}"
+        )
+        
+        chat_type = update.effective_chat.type
+        chat_info = "группе" if chat_type in ['group', 'supergroup'] else "личке"
+        
+        await update.message.reply_text(
+            f"✅ Time-based алерты запущены в {chat_info}!\n"
+            f"⏰ Вы будете получать уведомления:\n"
+            f"  • За 20 минут до funding\n"
+            f"  • За 10 минут до funding\n"
+            f"🔍 Проверка каждые 2 минуты"
+        )
+    
+    async def stop_time_alerts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /stop_time_alerts - остановить time-based алерты."""
+        chat_id = update.effective_chat.id
+        
+        if chat_id in self.user_settings:
+            self.user_settings[chat_id]['time_alerts'] = False
+        
+        # Останавливаем задачу time-based алертов
+        jobs = context.job_queue.get_jobs_by_name(f"time_alerts_{chat_id}")
+        for job in jobs:
+            job.schedule_removal()
+        
+        # Очищаем отправленные алерты для этого чата
+        if str(chat_id) in self.time_alert_sent:
+            self.time_alert_sent[str(chat_id)].clear()
+        
+        await update.message.reply_text("✅ Time-based алерты остановлены")
+    
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /status - показать текущие настройки."""
         chat_id = update.effective_chat.id
-        settings = self.user_settings.get(chat_id, {'threshold': 0.5, 'monitoring': False})
+        settings = self.user_settings.get(chat_id, {'threshold': 0.5, 'monitoring': False, 'time_alerts': False})
         
-        status_emoji = "🟢" if settings['monitoring'] else "🔴"
-        status_text = "Активен" if settings['monitoring'] else "Неактивен"
+        status_emoji = "🟢" if settings.get('monitoring') else "🔴"
+        status_text = "Активен" if settings.get('monitoring') else "Неактивен"
+        
+        time_alerts_emoji = "🟢" if settings.get('time_alerts') else "🔴"
+        time_alerts_text = "Активны" if settings.get('time_alerts') else "Неактивны"
         
         message = (
             f"\n📊 <b>Ваши настройки</b>\n"
             f"{'─' * 30}\n\n"
-            f"⚙️ Порог алерта: <b>{settings['threshold']}%</b>\n"
-            f"{status_emoji} Мониторинг: <b>{status_text}</b>\n\n"
-            f"<i>💡 Используйте /start_monitoring для запуска</i>"
+            f"⚙️ Порог алерта: <b>{settings.get('threshold', 0.5)}%</b>\n"
+            f"{status_emoji} Мониторинг по порогу: <b>{status_text}</b>\n"
+            f"{time_alerts_emoji} Time-based алерты: <b>{time_alerts_text}</b>\n\n"
+            f"<i>💡 /start_monitoring - запуск мониторинга по порогу</i>\n"
+            f"<i>⏰ /start_time_alerts - алерты за 20/10 мин до funding</i>"
         )
         
         await update.message.reply_text(message, parse_mode='HTML')
@@ -559,6 +626,96 @@ class FundingBot:
         except Exception as e:
             logger.error(f"Error in check_alerts: {e}")
     
+    async def check_time_alerts(self, context: CallbackContext):
+        """Проверка алертов по времени до funding (за 20 и 10 минут)."""
+        chat_id = context.job.data['chat_id']
+        settings = self.user_settings.get(chat_id)
+        
+        if not settings or not settings.get('time_alerts'):
+            return
+        
+        try:
+            logger.info(f"Checking time-based alerts for chat {chat_id}")
+            
+            # Получаем топ контракты (ASYNC)
+            grouped = await self.aggregator.get_grouped_by_token(top_contracts_limit=10)
+            
+            if not grouped:
+                return
+            
+            # Инициализируем set для отслеживания отправленных алертов
+            if str(chat_id) not in self.time_alert_sent:
+                self.time_alert_sent[str(chat_id)] = set()
+            
+            current_time = datetime.now(timezone.utc)
+            
+            # Проверяем каждый токен
+            for token, rates in grouped.items():
+                if not rates:
+                    continue
+                
+                # Берем ближайшее время funding
+                top_rate = rates[0]
+                time_until_funding = (top_rate.next_funding_time - current_time).total_seconds() / 60
+                
+                # Проверяем интервалы (с некоторой погрешностью)
+                alert_key_20m = f"{token}_20m"
+                alert_key_10m = f"{token}_10m"
+                
+                # За 20 минут (18-22 минуты)
+                if 18 <= time_until_funding <= 22 and alert_key_20m not in self.time_alert_sent[str(chat_id)]:
+                    message = (
+                        f"⏰ <b>До funding осталось ~20 минут</b>\n\n"
+                        f"🪙 <b>Токен:</b> {token}\n"
+                        f"⏱️ <b>Funding через:</b> {int(time_until_funding)} мин\n"
+                        f"📅 <b>Точное время:</b> {top_rate.next_funding_time.strftime('%H:%M:%S UTC')}\n\n"
+                        f"📊 <b>Ставки на биржах:</b>\n"
+                    )
+                    
+                    for rate in rates[:5]:  # Топ-5 бирж
+                        message += f"• <b>{rate.exchange}:</b> {rate.rate_percentage:+.4f}% (${rate.price:.2f})\n"
+                    
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        parse_mode='HTML',
+                        disable_web_page_preview=True
+                    )
+                    
+                    self.time_alert_sent[str(chat_id)].add(alert_key_20m)
+                    logger.info(f"20-minute alert sent to chat {chat_id} for token {token}")
+                
+                # За 10 минут (8-12 минут)
+                elif 8 <= time_until_funding <= 12 and alert_key_10m not in self.time_alert_sent[str(chat_id)]:
+                    message = (
+                        f"⏰ <b>До funding осталось ~10 минут!</b>\n\n"
+                        f"🪙 <b>Токен:</b> {token}\n"
+                        f"⏱️ <b>Funding через:</b> {int(time_until_funding)} мин\n"
+                        f"📅 <b>Точное время:</b> {top_rate.next_funding_time.strftime('%H:%M:%S UTC')}\n\n"
+                        f"📊 <b>Ставки на биржах:</b>\n"
+                    )
+                    
+                    for rate in rates[:5]:  # Топ-5 бирж
+                        message += f"• <b>{rate.exchange}:</b> {rate.rate_percentage:+.4f}% (${rate.price:.2f})\n"
+                    
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        parse_mode='HTML',
+                        disable_web_page_preview=True
+                    )
+                    
+                    self.time_alert_sent[str(chat_id)].add(alert_key_10m)
+                    logger.info(f"10-minute alert sent to chat {chat_id} for token {token}")
+                
+                # Очищаем старые алерты (если funding прошло)
+                if time_until_funding < 0:
+                    self.time_alert_sent[str(chat_id)].discard(alert_key_20m)
+                    self.time_alert_sent[str(chat_id)].discard(alert_key_10m)
+        
+        except Exception as e:
+            logger.error(f"Error in check_time_alerts: {e}")
+    
     def run(self):
         """Запуск бота."""
         self.app = Application.builder().token(self.token).build()
@@ -572,6 +729,8 @@ class FundingBot:
         self.app.add_handler(CommandHandler("set_threshold", self.set_threshold_command))
         self.app.add_handler(CommandHandler("start_monitoring", self.start_monitoring_command))
         self.app.add_handler(CommandHandler("stop_monitoring", self.stop_monitoring_command))
+        self.app.add_handler(CommandHandler("start_time_alerts", self.start_time_alerts_command))
+        self.app.add_handler(CommandHandler("stop_time_alerts", self.stop_time_alerts_command))
         self.app.add_handler(CommandHandler("status", self.status_command))
         self.app.add_handler(CommandHandler("cache_stats", self.cache_stats_command))
         self.app.add_handler(CommandHandler("clear_cache", self.clear_cache_command))
