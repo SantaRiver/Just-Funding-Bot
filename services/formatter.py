@@ -104,7 +104,7 @@ class MessageFormatter:
         table += f"{'Биржа':<10} │ {'Цена':<9} │ {'Rate':<9} │ {'⏱️':<7}\n"
         table += f"{'─'*10}─┼─{'─'*9}─┼─{'─'*9}─┼─{'─'*7}\n"
         
-        for i, rate in enumerate(rates[:10], 1):  # Показываем топ-10 бирж
+        for i, rate in enumerate(rates, 1):  # Показываем все биржи
             time_to_funding = rate.next_funding_time - now
             hours_left = int(time_to_funding.total_seconds() // 3600)
             mins_left = int((time_to_funding.total_seconds() % 3600) // 60)
@@ -129,7 +129,7 @@ class MessageFormatter:
         
         # Добавляем ссылки на контракты
         links = "📊 <b>Ссылки на контракты:</b>\n"
-        for rate in rates[:10]:
+        for rate in rates:
             link = MessageFormatter._get_contract_link(rate.exchange, rate.symbol, token)
             links += f"  • <b>{rate.exchange}</b>: {link}\n"
         
@@ -224,7 +224,7 @@ class MessageFormatter:
             message += f"{'Биржа':<10} │ {'Rate':<9} │ {'Время':<7}\n"
             message += f"{'─'*10}─┼─{'─'*9}─┼─{'─'*7}\n"
             
-            for rate in rates[:5]:  # Показываем топ-5 бирж
+            for rate in rates:  # Показываем все биржи
                 rate_str = f"{rate.rate_percentage:+.4f}%"
                 
                 # Конкретное время funding для этой биржи (UTC+3)
@@ -238,7 +238,7 @@ class MessageFormatter:
             # Таблица со ссылками на контракты (без pre, чтобы ссылки работали)
             message += "📊 <b>Ссылки на контракты:</b>\n"
             
-            for rate in rates[:5]:
+            for rate in rates:
                 # Генерируем ссылку на контракт
                 link = MessageFormatter._get_contract_link(rate.exchange, rate.symbol, token)
                 message += f"  • <b>{rate.exchange}</b>: {link}\n"

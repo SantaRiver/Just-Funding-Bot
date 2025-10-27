@@ -19,10 +19,11 @@ class BitgetAdapter(ExchangeAdapter):
     async def get_top_contracts(self, limit: int = 20) -> List[ContractInfo]:
         """Получить список топ контрактов."""
         try:
+            client = self._get_client()
             endpoint = f"{self.BASE_URL}/api/mix/v1/market/contracts"
             params = {"productType": "umcbl"}  # USDT-margined
             
-            response = await self.client.get(endpoint, params=params, timeout=5.0)
+            response = await client.get(endpoint, params=params, timeout=5.0)
             data = response.json()
             
             if data.get('code') != '00000':
@@ -51,10 +52,11 @@ class BitgetAdapter(ExchangeAdapter):
     async def get_funding_rate(self, symbol: str) -> Optional[FundingRate]:
         """Получить текущую ставку финансирования для символа."""
         try:
+            client = self._get_client()
             endpoint = f"{self.BASE_URL}/api/mix/v1/market/current-fundRate"
             params = {"symbol": symbol}
             
-            response = await self.client.get(endpoint, params=params, timeout=5.0)
+            response = await client.get(endpoint, params=params, timeout=5.0)
             
             if response is None or response.status_code != 200:
                 return None
@@ -96,10 +98,11 @@ class BitgetAdapter(ExchangeAdapter):
     async def _get_mark_price(self, symbol: str) -> Optional[float]:
         """Получить mark price для символа."""
         try:
+            client = self._get_client()
             endpoint = f"{self.BASE_URL}/api/mix/v1/market/ticker"
             params = {"symbol": symbol}
             
-            response = await self.client.get(endpoint, params=params, timeout=5.0)
+            response = await client.get(endpoint, params=params, timeout=5.0)
             data = response.json()
             
             if data.get('code') == '00000':

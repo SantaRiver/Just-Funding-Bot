@@ -215,53 +215,85 @@ class FundingRateAggregator:
             symbol = bybit_rate.symbol
             base_token = symbol.replace('USDT', '').replace('PERP', '')
             
-            logger.info(f"Getting rates for {base_token} (Bybit rate: {bybit_rate.rate_percentage:+.4f}%)...")
+            logger.info(f"\n{'='*60}")
+            logger.info(f"📊 Getting rates for {base_token} (Bybit rate: {bybit_rate.rate_percentage:+.4f}%)")
+            logger.info(f"{'='*60}")
             
             # Собираем данные от всех бирж ПАРАЛЛЕЛЬНО
             rates = [bybit_rate]  # Добавляем ставку от Bybit
             
             # Создаем задачи для всех бирж (кроме Bybit)
-            tasks = []
-            for exchange in self.exchanges:
-                if exchange.name == "BYBIT":
-                    continue
-                tasks.append(self._get_rate_for_token(exchange, base_token))
+            other_exchanges = [ex for ex in self.exchanges if ex.name != "BYBIT"]
+            tasks = [self._get_rate_for_token(exchange, base_token) for exchange in other_exchanges]
             
             # Запускаем все задачи параллельно
+            logger.info(f"🚀 Запрашиваю данные от {len(other_exchanges)} бирж: {', '.join([ex.name for ex in other_exchanges])}")
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Собираем результаты
-            for result in results:
+            # Собираем результаты и логируем детали
+            success_count = 0
+            error_count = 0
+            no_data_count = 0
+            
+            for i, result in enumerate(results):
+                exchange_name = other_exchanges[i].name
                 if isinstance(result, FundingRate):
                     rates.append(result)
+                    success_count += 1
                 elif isinstance(result, Exception):
-                    logger.debug(f"Task failed: {result}")
+                    logger.error(f"  ❌ {exchange_name}: Exception - {type(result).__name__}: {result}")
+                    error_count += 1
+                elif result is None:
+                    no_data_count += 1
+            
+            # Сводка по токену
+            logger.info(f"\n📈 СВОДКА по {base_token}:")
+            logger.info(f"  ✅ Успешно: {success_count + 1} бирж (включая BYBIT)")
+            logger.info(f"  ⚠️  Нет данных: {no_data_count} бирж")
+            logger.info(f"  ❌ Ошибки: {error_count} бирж")
+            logger.info(f"  📊 Всего собрано: {len(rates)} из {len(self.exchanges)} бирж")
             
             if rates:
                 # Сортируем по абсолютному значению ставки
                 rates.sort(key=lambda x: x.abs_rate, reverse=True)
                 grouped_rates[base_token] = rates
-                logger.info(f"  -> Collected {len(rates)} rates for {base_token}")
+                
+                # Показываем топ-3 ставки
+                logger.info(f"  🏆 Топ-3 ставки:")
+                for i, rate in enumerate(rates[:3], 1):
+                    logger.info(f"     {i}. {rate.exchange}: {rate.rate_percentage:+.4f}%")
         
         return grouped_rates
     
     async def _get_rate_for_token(self, exchange: ExchangeAdapter, base_token: str) -> Optional[FundingRate]:
         """Вспомогательный метод для получения ставки от одной биржи."""
+        start_time = datetime.now()
         try:
             symbol_variants = self._get_symbol_variants(base_token, 'USDT')
             
-            logger.debug(f"{exchange.name}: trying variants {symbol_variants} for {base_token}")
+            logger.debug(f"🔍 {exchange.name}: trying variants {symbol_variants} for {base_token}")
             
-            for symbol_variant in symbol_variants:
-                rate = await exchange.get_funding_rate(symbol_variant)
-                if rate:
-                    logger.info(f"  ✅ {exchange.name}: {base_token} = {rate.rate_percentage:+.4f}%")
-                    return rate
+            for i, symbol_variant in enumerate(symbol_variants, 1):
+                try:
+                    rate = await exchange.get_funding_rate(symbol_variant)
+                    if rate:
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        logger.info(f"  ✅ {exchange.name}: {base_token} = {rate.rate_percentage:+.4f}% (symbol: {symbol_variant}, {elapsed:.2f}s)")
+                        return rate
+                    else:
+                        logger.debug(f"  ⚪ {exchange.name}: No data for {symbol_variant} (attempt {i}/{len(symbol_variants)})")
+                except Exception as variant_error:
+                    logger.debug(f"  ⚠️  {exchange.name}: {symbol_variant} failed - {type(variant_error).__name__}: {variant_error}")
+                    continue
             
-            logger.warning(f"  ⚠️  {exchange.name}: No data for {base_token} (tried {len(symbol_variants)} variants)")
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.warning(f"  ⚠️  {exchange.name}: No data for {base_token} after trying {len(symbol_variants)} variants ({elapsed:.2f}s)")
             return None
         except Exception as e:
-            logger.error(f"  ❌ {exchange.name}: Error for {base_token}: {e}")
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.error(f"  ❌ {exchange.name}: Error for {base_token}: {type(e).__name__}: {e} ({elapsed:.2f}s)")
+            import traceback
+            logger.debug(f"  Stack trace:\n{traceback.format_exc()}")
             return None
     
     def _safe_get_funding_rate(self, exchange: ExchangeAdapter, symbol: str) -> Optional[FundingRate]:

@@ -1,9 +1,11 @@
 """Телеграм-бот для мониторинга funding rates."""
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Set
 import asyncio
+from pathlib import Path
 from dotenv import load_dotenv
 
 from telegram import Update
@@ -30,12 +32,54 @@ from services.aggregator import FundingRateAggregator
 from services.formatter import MessageFormatter
 
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+# Создаем директорию для логов
+logs_dir = Path(__file__).parent / "logs"
+logs_dir.mkdir(exist_ok=True)
+
+# Настройка логирования с записью в файлы
+log_format = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Основной лог-файл (все уровни)
+main_handler = RotatingFileHandler(
+    logs_dir / "bot.log",
+    maxBytes=10*1024*1024,  # 10 MB
+    backupCount=5,
+    encoding='utf-8'
+)
+main_handler.setFormatter(log_format)
+main_handler.setLevel(logging.INFO)
+
+# Лог-файл только для ошибок
+error_handler = RotatingFileHandler(
+    logs_dir / "errors.log",
+    maxBytes=5*1024*1024,  # 5 MB
+    backupCount=3,
+    encoding='utf-8'
+)
+error_handler.setFormatter(log_format)
+error_handler.setLevel(logging.ERROR)
+
+# Консольный вывод
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_format)
+console_handler.setLevel(logging.INFO)
+
+# Настройка root logger
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[main_handler, error_handler, console_handler]
+)
+
+# Отключаем избыточные логи от сторонних библиотек
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
+logger.info(f"📁 Логи сохраняются в: {logs_dir.absolute()}")
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -119,23 +163,56 @@ class FundingBot:
     
     async def top_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /top - показать топ токенов."""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
         exchanges_list = ", ".join([ex.name for ex in self.aggregator.exchanges])
         await update.message.reply_text(f"🔄 Собираю данные от бирж: {exchanges_list}...")
         
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🔥 /top command from user {user_id} in chat {chat_id}")
+        logger.info(f"{'='*80}")
+        logger.info(f"📡 Активных бирж: {len(self.aggregator.exchanges)}")
+        logger.info(f"📋 Список бирж: {exchanges_list}")
+        
         try:
+            from datetime import datetime
+            start_time = datetime.now()
+            
             # Получаем топ контракты, сгруппированные по токенам (ASYNC)
+            logger.info(f"🚀 Начинаю сбор данных...")
             grouped = await self.aggregator.get_grouped_by_token(top_contracts_limit=5)
             
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.info(f"\n{'='*80}")
+            logger.info(f"⏱️  ИТОГО: Сбор данных завершен за {elapsed:.2f}s")
+            logger.info(f"{'='*80}")
+            
             if not grouped:
+                logger.warning("❌ Не получено данных от бирж")
                 await update.message.reply_text("Не удалось получить данные. Попробуйте позже.")
                 return
+            
+            # Логируем итоговую статистику
+            total_exchanges_responded = sum(len(rates) for rates in grouped.values())
+            total_possible = len(grouped) * len(self.aggregator.exchanges)
+            success_rate = (total_exchanges_responded / total_possible * 100) if total_possible > 0 else 0
+            
+            logger.info(f"📊 Статистика по токенам:")
+            for token, rates in grouped.items():
+                logger.info(f"   • {token}: {len(rates)}/{len(self.aggregator.exchanges)} бирж ответили")
+            
+            logger.info(f"\n✅ Общий успех: {total_exchanges_responded}/{total_possible} ({success_rate:.1f}%)")
+            logger.info(f"{'='*80}\n")
             
             # Форматируем и отправляем отчет
             message = self.formatter.format_grouped_report(grouped, limit=5)
             await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
-            logger.error(f"Error in top_command: {e}")
+            logger.error(f"❌ Error in top_command: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"Stack trace:\n{traceback.format_exc()}")
             await update.message.reply_text(f"Произошла ошибка: {str(e)}")
     
     async def token_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
