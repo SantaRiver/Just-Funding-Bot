@@ -278,3 +278,108 @@ class MessageFormatter:
         message += "```"
         
         return message
+    
+    @staticmethod
+    def format_hedging_opportunities(opportunities: List[Dict], limit: int = 5) -> str:
+        """
+        Форматирует список возможностей для хеджирования.
+        
+        Args:
+            opportunities: Список словарей с информацией о возможностях
+            limit: Количество возможностей для отображения
+            
+        Returns:
+            Отформатированное сообщение
+        """
+        if not opportunities:
+            return "❌ Не найдено возможностей для хеджирования с заданными параметрами"
+        
+        # Заголовок
+        message = f"\n💎 <b>ВОЗМОЖНОСТИ ДЛЯ ХЕДЖИРОВАНИЯ</b>\n"
+        message += f"<i>Найдено: {len(opportunities)} | Показано топ-{min(limit, len(opportunities))}</i>\n"
+        message += f"{'─' * 45}\n\n"
+        
+        # Показываем топ возможностей
+        for i, opp in enumerate(opportunities[:limit], 1):
+            token = opp['token']
+            spread = opp['spread']
+            long_rate = opp['long_rate']
+            short_rate = opp['short_rate']
+            long_exch = opp['long_exchange']
+            short_exch = opp['short_exchange']
+            
+            # Определяем эмодзи по размеру спреда
+            if spread >= 1.0:
+                spread_emoji = "🔥"  # Очень выгодный спред
+            elif spread >= 0.5:
+                spread_emoji = "💰"  # Хороший спред
+            else:
+                spread_emoji = "💵"  # Средний спред
+            
+            # Заголовок возможности
+            message += f"{spread_emoji} <b>{i}. {token}</b>\n"
+            message += f"📊 Спред: <b>{spread:.4f}%</b>\n"
+            
+            # Форматируем цену
+            if long_rate.price >= 1000:
+                price_str = f"${long_rate.price:,.0f}"
+            else:
+                price_str = f"${long_rate.price:.2f}"
+            message += f"💰 Цена: {price_str}\n\n"
+            
+            # Стратегия
+            message += f"<b>🎯 Стратегия:</b>\n"
+            message += f"📈 LONG на <b>{long_exch}</b>: {long_rate.rate_percentage:+.4f}%\n"
+            message += f"📉 SHORT на <b>{short_exch}</b>: {short_rate.rate_percentage:+.4f}%\n\n"
+            
+            # Потенциальная прибыль
+            profit_per_cycle = spread
+            message += f"💵 Прибыль за цикл: <b>~{profit_per_cycle:.4f}%</b>\n"
+            
+            # Информация о времени
+            from datetime import timezone, timedelta
+            now = datetime.now(timezone.utc)
+            time_to_funding = long_rate.next_funding_time - now
+            hours = int(time_to_funding.total_seconds() // 3600)
+            minutes = int((time_to_funding.total_seconds() % 3600) // 60)
+            
+            message += f"⏰ До funding: <b>{hours}ч {minutes}мин</b>\n\n"
+            
+            # Таблица со всеми биржами
+            message += "<pre>"
+            message += f"{'Биржа':<10} │ {'Rate':<9}\n"
+            message += f"{'─'*10}─┼─{'─'*9}\n"
+            
+            # Сортируем от минимальной к максимальной ставке
+            sorted_rates = sorted(opp['all_rates'], key=lambda x: x.rate)
+            for rate in sorted_rates:
+                rate_str = f"{rate.rate_percentage:+.4f}%"
+                # Отмечаем выбранные биржи
+                marker = ""
+                if rate.exchange == long_exch:
+                    marker = " 📈"
+                elif rate.exchange == short_exch:
+                    marker = " 📉"
+                
+                message += f"{rate.exchange:<10} │ {rate_str:<9}{marker}\n"
+            
+            message += "</pre>\n"
+            
+            # Ссылки на контракты
+            message += "📊 <b>Ссылки:</b>\n"
+            long_link = MessageFormatter._get_contract_link(long_exch, long_rate.symbol, token)
+            short_link = MessageFormatter._get_contract_link(short_exch, short_rate.symbol, token)
+            message += f"  • <b>{long_exch}</b> (LONG): {long_link}\n"
+            message += f"  • <b>{short_exch}</b> (SHORT): {short_link}\n"
+            
+            # Разделитель между возможностями
+            if i < min(limit, len(opportunities)):
+                message += f"\n{'─' * 45}\n\n"
+        
+        # Легенда
+        message += f"\n\n💡 <i>Спред = разница между макс и мин ставками</i>\n"
+        message += f"<i>📈 LONG = покупка | 📉 SHORT = продажа</i>\n"
+        message += f"<i>🔥 &gt;1% | 💰 &gt;0.5% | 💵 &gt;0.3%</i>\n"
+        message += f"\n⚠️ <b>Важно:</b> <i>Учитывайте комиссии, проскальзывание и риски</i>"
+        
+        return message

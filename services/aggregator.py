@@ -324,6 +324,85 @@ class FundingRateAggregator:
         """Инвалидировать конкретный ключ кэша."""
         await self.cache.invalidate(key)
     
+    async def find_hedging_opportunities(self, min_spread: float = 0.3) -> List[Dict]:
+        """
+        Находит возможности для хеджирования на основе разницы funding rates между биржами.
+        
+        Логика:
+        1. Получает данные по топ токенам от всех бирж
+        2. Для каждого токена находит макс и мин funding rate
+        3. Вычисляет спред (разницу между макс и мин)
+        4. Возвращает токены со спредом >= min_spread
+        
+        Args:
+            min_spread: Минимальный спред в % для отбора (по умолчанию 0.3%)
+            
+        Returns:
+            Список словарей с информацией о возможностях хеджирования:
+            {
+                'token': str,
+                'spread': float,  # в процентах
+                'long_exchange': str,  # биржа с самой низкой (или отрицательной) ставкой
+                'long_rate': FundingRate,
+                'short_exchange': str,  # биржа с самой высокой ставкой
+                'short_rate': FundingRate,
+                'all_rates': List[FundingRate]
+            }
+        """
+        logger.info(f"🔍 Searching for hedging opportunities with min spread: {min_spread}%")
+        
+        # Получаем данные по токенам от всех бирж
+        grouped = await self.get_grouped_by_token(top_contracts_limit=10)
+        
+        if not grouped:
+            logger.warning("No data available for hedging search")
+            return []
+        
+        opportunities = []
+        
+        for token, rates in grouped.items():
+            # Нужно минимум 2 биржи для хеджирования
+            if len(rates) < 2:
+                continue
+            
+            # Сортируем по rate (не по abs_rate!)
+            sorted_rates = sorted(rates, key=lambda x: x.rate)
+            
+            # Самая низкая ставка (может быть отрицательной) - здесь выгодно держать LONG
+            min_rate = sorted_rates[0]
+            # Самая высокая ставка - здесь выгодно держать SHORT
+            max_rate = sorted_rates[-1]
+            
+            # Вычисляем спред в процентах
+            spread = (max_rate.rate - min_rate.rate) * 100
+            
+            # Проверяем превышает ли спред минимум
+            if spread >= min_spread:
+                opportunity = {
+                    'token': token,
+                    'spread': spread,
+                    'long_exchange': min_rate.exchange,  # Биржа где держим LONG
+                    'long_rate': min_rate,
+                    'short_exchange': max_rate.exchange,  # Биржа где держим SHORT
+                    'short_rate': max_rate,
+                    'all_rates': rates
+                }
+                opportunities.append(opportunity)
+                
+                logger.info(
+                    f"💎 Hedging opportunity: {token} | "
+                    f"Spread: {spread:.4f}% | "
+                    f"LONG on {min_rate.exchange} ({min_rate.rate_percentage:+.4f}%) | "
+                    f"SHORT on {max_rate.exchange} ({max_rate.rate_percentage:+.4f}%)"
+                )
+        
+        # Сортируем по убыванию спреда
+        opportunities.sort(key=lambda x: x['spread'], reverse=True)
+        
+        logger.info(f"✅ Found {len(opportunities)} hedging opportunities")
+        
+        return opportunities
+    
     @staticmethod
     def _get_symbol_variants(base: str, quote: str) -> List[str]:
         """

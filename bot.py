@@ -146,6 +146,7 @@ class FundingBot:
             "<b>📋 Основные команды:</b>\n\n"
             "🏆 /top - Топ-5 токенов с ближайшим funding\n"
             "🔍 /token BTC - Данные по конкретному токену\n"
+            "💎 /hedge - Найти возможности для хеджирования\n"
             "⚙️ /set_threshold 0.5 - Установить порог алерта\n"
             "🔔 /start_monitoring - Начать мониторинг\n"
             "🔕 /stop_monitoring - Остановить мониторинг\n"
@@ -401,6 +402,78 @@ class FundingBot:
             logger.error(f"Error in clear_cache_command: {e}")
             await update.message.reply_text(f"Ошибка: {str(e)}")
     
+    async def hedge_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /hedge - найти возможности для хеджирования."""
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Проверяем есть ли аргумент с минимальным спредом
+        min_spread = 0.3  # По умолчанию 0.3%
+        if context.args:
+            try:
+                min_spread = float(context.args[0])
+                if min_spread < 0:
+                    await update.message.reply_text("❌ Минимальный спред должен быть положительным числом")
+                    return
+            except ValueError:
+                await update.message.reply_text(
+                    "Использование: /hedge [MIN_SPREAD]\n"
+                    "Пример: /hedge 0.5 (для минимального спреда 0.5%)\n"
+                    "По умолчанию: 0.3%"
+                )
+                return
+        
+        exchanges_list = ", ".join([ex.name for ex in self.aggregator.exchanges])
+        await update.message.reply_text(
+            f"🔍 Ищу возможности для хеджирования...\n"
+            f"Минимальный спред: {min_spread}%\n"
+            f"Биржи: {exchanges_list}"
+        )
+        
+        logger.info(f"\n{'='*80}")
+        logger.info(f"💎 /hedge command from user {user_id} in chat {chat_id}")
+        logger.info(f"Min spread: {min_spread}%")
+        logger.info(f"{'='*80}")
+        
+        try:
+            from datetime import datetime
+            start_time = datetime.now()
+            
+            # Получаем возможности для хеджирования
+            logger.info(f"🚀 Начинаю поиск возможностей для хеджирования...")
+            opportunities = await self.aggregator.find_hedging_opportunities(min_spread=min_spread)
+            
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.info(f"\n{'='*80}")
+            logger.info(f"⏱️  ИТОГО: Поиск завершен за {elapsed:.2f}s")
+            logger.info(f"{'='*80}")
+            
+            if not opportunities:
+                await update.message.reply_text(
+                    f"❌ Не найдено возможностей для хеджирования с минимальным спредом {min_spread}%\n\n"
+                    f"💡 Попробуйте уменьшить минимальный спред: /hedge 0.2"
+                )
+                return
+            
+            # Логируем статистику
+            logger.info(f"📊 Найдено возможностей: {len(opportunities)}")
+            for i, opp in enumerate(opportunities[:5], 1):
+                logger.info(
+                    f"  {i}. {opp['token']}: Спред {opp['spread']:.4f}% | "
+                    f"LONG {opp['long_exchange']} ({opp['long_rate'].rate_percentage:+.4f}%) | "
+                    f"SHORT {opp['short_exchange']} ({opp['short_rate'].rate_percentage:+.4f}%)"
+                )
+            
+            # Форматируем и отправляем отчет
+            message = self.formatter.format_hedging_opportunities(opportunities, limit=5)
+            await update.message.reply_text(message, parse_mode='HTML', disable_web_page_preview=True)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in hedge_command: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"Stack trace:\n{traceback.format_exc()}")
+            await update.message.reply_text(f"Произошла ошибка: {str(e)}")
+    
     async def check_alerts(self, context: CallbackContext):
         """Проверка алертов для чата (запускается периодически)."""
         chat_id = context.job.data['chat_id']
@@ -495,6 +568,7 @@ class FundingBot:
         self.app.add_handler(CommandHandler("help", self.help_command))
         self.app.add_handler(CommandHandler("top", self.top_command))
         self.app.add_handler(CommandHandler("token", self.token_command))
+        self.app.add_handler(CommandHandler("hedge", self.hedge_command))
         self.app.add_handler(CommandHandler("set_threshold", self.set_threshold_command))
         self.app.add_handler(CommandHandler("start_monitoring", self.start_monitoring_command))
         self.app.add_handler(CommandHandler("stop_monitoring", self.stop_monitoring_command))
